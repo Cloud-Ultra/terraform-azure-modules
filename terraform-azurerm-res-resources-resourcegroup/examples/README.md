@@ -1,0 +1,171 @@
+Complete Resource Group Deployment
+This module is used to deploy an Azure Resource Group with all available functionality
+
+terraform {
+  required_version = ">= 1.9, < 2.0"
+
+  required_providers {
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.4"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.5.0, < 4.0.0"
+    }
+  }
+}
+
+provider "azapi" {}
+
+/*
+# NOTE: The azurerm provider block is required only when upgrading from a previous version of the module that used the azurerm provider. It can be removed in new implementations of the module or after upgrading.
+provider "azurerm" {
+  features {}
+}
+*/
+
+data "azapi_client_config" "current" {}
+
+# Importing the Azure naming module to ensure resources have unique CAF compliant names.
+module "naming" {
+  source  = "Azure/naming/azurerm"
+  version = "0.4.2"
+}
+
+module "regions" {
+  source  = "Azure/avm-utl-regions/azurerm"
+  version = "0.12.0"
+
+  is_recommended = true
+}
+
+# This allows us to randomize the region for the resource group.
+resource "random_integer" "region_index" {
+  max = length(module.regions.regions) - 1
+  min = 0
+}
+
+resource "azapi_resource" "dep" {
+  location  = module.regions.regions[random_integer.region_index.result].name
+  name      = "${module.naming.resource_group.name_unique}-dep"
+  parent_id = "/subscriptions/${data.azapi_client_config.current.subscription_id}"
+  type      = "Microsoft.Resources/resourceGroups@2025-04-01"
+  body = {
+    properties = {}
+  }
+}
+
+resource "azapi_resource" "dep_uai" {
+  location               = azapi_resource.dep.location
+  name                   = module.naming.user_assigned_identity.name_unique
+  parent_id              = azapi_resource.dep.id
+  type                   = "Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31"
+  body                   = {}
+  response_export_values = ["properties.principalId"]
+}
+
+module "resource_group" {
+  source = "../../"
+
+  location           = module.regions.regions[random_integer.region_index.result].name
+  name               = module.naming.resource_group.name_unique
+  ignore_tag_changes = true
+  lock = {
+    kind = "CanNotDelete"
+    name = "myCustomLockName"
+  }
+  role_assignments = {
+    "roleassignment1" = {
+      name                       = "dfd0b1f9-3f46-32ba-e9e1-4b5591aa8337"
+      principal_id               = azapi_resource.dep_uai.output.properties.principalId
+      role_definition_id_or_name = "Reader"
+      principal_type             = "ServicePrincipal"
+      description                = "Reader role assignment for the user assigned identity"
+    },
+    "role_assignment2" = {
+      name                             = "bd83f8d6-f0a2-1584-9e3c-f31c185847ea"
+      role_definition_id_or_name       = "Storage Blob Data Reader"
+      principal_id                     = azapi_resource.dep_uai.output.properties.principalId
+      skip_service_principal_aad_check = false
+      principal_type                   = "ServicePrincipal"
+      description                      = "Storage Blob Data Reader role assignment with conditional access on blob list operations"
+      condition_version                = "2.0"
+      condition                        = <<-EOT
+(
+ (
+  !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'})
+ )
+ OR
+ (
+  @Resource[Microsoft.Storage/storageAccounts/blobServices/containers:name] StringEquals 'blobs-example-container'
+ )
+)
+EOT
+    },
+    "role_assignment3" = {
+      role_definition_id_or_name = "/subscriptions/${data.azapi_client_config.current.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe" # Storage Blob Data Contributor
+      principal_id               = azapi_resource.dep_uai.output.properties.principalId
+      principal_type             = "ServicePrincipal"
+      description                = "Storage Blob Data Contributor role assignment using a role definition resource ID"
+    }
+  }
+  tags = {
+    "hidden-title" = "This is visible in the resource name"
+    Environment    = "Non-Prod"
+    Role           = "DeploymentValidation"
+  }
+}
+Requirements
+The following requirements are needed by this module:
+
+terraform (>= 1.9, < 2.0)
+
+azapi (~> 2.4)
+
+random (>= 3.5.0, < 4.0.0)
+
+Resources
+The following resources are used by this module:
+
+azapi_resource.dep (resource)
+azapi_resource.dep_uai (resource)
+random_integer.region_index (resource)
+azapi_client_config.current (data source)
+Required Inputs
+No required inputs.
+
+Optional Inputs
+No optional inputs.
+
+Outputs
+The following outputs are exported:
+
+name
+Description: The name of the resource group
+
+resource
+Description: This is the full output for the resource group.
+
+resource_id
+Description: The resource Id of the resource group
+
+Modules
+The following Modules are called:
+
+naming
+Source: Azure/naming/azurerm
+
+Version: 0.4.2
+
+regions
+Source: Azure/avm-utl-regions/azurerm
+
+Version: 0.12.0
+
+resource_group
+Source: ../../
+
+Version:
+
+Footer Data
